@@ -31,6 +31,9 @@ from vllm.model_executor.models.qwen3_vl import Qwen3VLMultiModalProcessor
 _ORIG_PROCESS_IMAGE_INPUT = Qwen3_5ForConditionalGeneration._process_image_input
 _ORIG_GET_PROMPT_UPDATES = Qwen3VLMultiModalProcessor._get_prompt_updates
 _FALLBACK_LOGGED = False
+_BUDGET_MISMATCH_LOGGED = False
+_DISABLE_NEXT_TRUE_IMAGE_PRUNE = False
+_PENDING_IMAGE_BUDGETS: list[tuple[int, int]] = []
 
 
 def _describe_out_mm_kwargs(out_mm_kwargs, item_idx: int) -> str:
@@ -66,6 +69,8 @@ def _describe_out_mm_kwargs(out_mm_kwargs, item_idx: int) -> str:
 
 
 def _log_prompt_update_fallback(reason: Exception, out_mm_kwargs, item_idx: int) -> None:
+    global _DISABLE_NEXT_TRUE_IMAGE_PRUNE
+    _DISABLE_NEXT_TRUE_IMAGE_PRUNE = True
     global _FALLBACK_LOGGED
     if _FALLBACK_LOGGED:
         return
@@ -79,6 +84,8 @@ def _log_prompt_update_fallback(reason: Exception, out_mm_kwargs, item_idx: int)
 
 
 def _log_processor_fallback(reason: str, processor) -> None:
+    global _DISABLE_NEXT_TRUE_IMAGE_PRUNE
+    _DISABLE_NEXT_TRUE_IMAGE_PRUNE = True
     global _FALLBACK_LOGGED
     if _FALLBACK_LOGGED:
         return
@@ -92,6 +99,17 @@ def _log_processor_fallback(reason: str, processor) -> None:
         "[occamtoken] true Stage-I prompt replacement fallback: "
         f"reason={reason}; processor_type={type(processor).__name__}; "
         f"image_attrs={attrs}",
+        file=sys.stderr,
+    )
+
+
+def _log_budget_mismatch(message: str) -> None:
+    global _BUDGET_MISMATCH_LOGGED
+    if _BUDGET_MISMATCH_LOGGED:
+        return
+    _BUDGET_MISMATCH_LOGGED = True
+    print(
+        f"[occamtoken] true Stage-I multi-image budget warning: {message}",
         file=sys.stderr,
     )
 
@@ -123,6 +141,12 @@ def _patched_get_prompt_updates(
     image_token_id = getattr(processor, "image_token_id", None)
     image_token = getattr(processor, "image_token", None)
     if image_token_id is None or image_token is None:
+        if config.strict:
+            raise RuntimeError(
+                "OccamToken true Stage-I requires processor.image_token and "
+                "processor.image_token_id, but at least one is missing. "
+                f"processor_type={type(processor).__name__}"
+            )
         _log_processor_fallback(
             "processor_missing_image_token_or_id",
             processor,
@@ -148,10 +172,17 @@ def _patched_get_prompt_updates(
                 grid_thw = torch.as_tensor(grid_thw)
             num_tokens = int(grid_thw.prod().item()) // merge_length
         except (KeyError, IndexError, TypeError, AttributeError, RuntimeError) as exc:
+            if config.strict:
+                raise RuntimeError(
+                    "OccamToken true Stage-I cannot read image_grid_thw from "
+                    "out_mm_kwargs. "
+                    f"{_describe_out_mm_kwargs(out_mm_kwargs, item_idx)}"
+                ) from exc
             _log_prompt_update_fallback(exc, out_mm_kwargs, item_idx)
             return fallback_image_replacement(item_idx)
 
         budget = config.stage1_budget(num_tokens)
+        _PENDING_IMAGE_BUDGETS.append((num_tokens, budget))
         return [image_token_id] * budget
 
     image_update = PromptReplacement(
@@ -164,16 +195,43 @@ def _patched_get_prompt_updates(
 
 
 def _patched_process_image_input(self, image_input):
+    global _DISABLE_NEXT_TRUE_IMAGE_PRUNE
     config = OccamTokenConfig.from_env()
     image_embeds_split = _ORIG_PROCESS_IMAGE_INPUT(self, image_input)
     if not config.stage1_active():
         return image_embeds_split
+    if config.true_stage1_active() and _DISABLE_NEXT_TRUE_IMAGE_PRUNE:
+        _DISABLE_NEXT_TRUE_IMAGE_PRUNE = False
+        _PENDING_IMAGE_BUDGETS.clear()
+        return image_embeds_split
 
     output = []
     stats = []
-    for image_embeds in image_embeds_split:
+    for item_idx, image_embeds in enumerate(image_embeds_split):
         if config.true_stage1_active():
             pruned, item_stats = prune_stage1_true(image_embeds, config)
+            if _PENDING_IMAGE_BUDGETS:
+                expected_original, expected_budget = _PENDING_IMAGE_BUDGETS.pop(0)
+                actual_original = int(image_embeds.shape[0])
+                actual_budget = int(pruned.shape[0])
+                if (
+                    expected_original != actual_original
+                    or expected_budget != actual_budget
+                ):
+                    _log_budget_mismatch(
+                        "placeholder budget and image embedding split differ: "
+                        f"item_idx={item_idx} "
+                        f"expected_original={expected_original} "
+                        f"actual_original={actual_original} "
+                        f"expected_budget={expected_budget} "
+                        f"actual_budget={actual_budget}"
+                    )
+            else:
+                _log_budget_mismatch(
+                    "missing pending placeholder budget for image embedding split: "
+                    f"item_idx={item_idx} actual_original={int(image_embeds.shape[0])} "
+                    f"actual_budget={int(pruned.shape[0])}"
+                )
         else:
             pruned, item_stats = prune_stage1_masked(image_embeds, config)
         output.append(pruned)

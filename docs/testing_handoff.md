@@ -122,6 +122,16 @@ export VLLM_ASCEND_OCCAMTOKEN_IMPL=true    # true image-token removal
 export VLLM_ASCEND_OCCAMTOKEN_IMPL=masked  # shape-preserving quality ablation
 ```
 
+Formal true-sparse tests should use:
+
+```bash
+export VLLM_ASCEND_OCCAMTOKEN_STRICT=1
+```
+
+With strict mode enabled, unexpected processor/output structures fail fast. With
+strict mode disabled, the patch prints one fallback diagnostic and uses vLLM's
+original image replacement for that request.
+
 Modes:
 
 ```bash
@@ -191,6 +201,7 @@ Then run a conservative true-pruning mode:
 
 ```bash
 export VLLM_ASCEND_OCCAMTOKEN_IMPL=true
+export VLLM_ASCEND_OCCAMTOKEN_STRICT=1
 MODEL_PATH=<QWEN3_5_MODEL_PATH> bash benchmarks/run_occamtoken_matrix.sh stage1-256
 ```
 

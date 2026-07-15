@@ -63,6 +63,7 @@ class OccamTokenConfig:
     max_text_tokens: int = 2048
     question_tail_tokens: int = 512
     log_stats: bool = False
+    strict: bool = False
 
     @classmethod
     def from_env(cls) -> "OccamTokenConfig":
@@ -118,6 +119,7 @@ class OccamTokenConfig:
                 "VLLM_ASCEND_OCCAMTOKEN_QUESTION_TAIL_TOKENS", 512
             ),
             log_stats=_env_bool("VLLM_ASCEND_OCCAMTOKEN_LOG_STATS", False),
+            strict=_env_bool("VLLM_ASCEND_OCCAMTOKEN_STRICT", False),
         )
 
     def active(self) -> bool:

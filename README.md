@@ -37,6 +37,7 @@ export VLLM_ASCEND_OCCAMTOKEN_STAGE=stage1  # fixed | stage1 | stage2 | full
 export VLLM_ASCEND_OCCAMTOKEN_TARGET_RATIO=0.125
 export VLLM_ASCEND_OCCAMTOKEN_STAGE1_RATIO=0.25
 export VLLM_ASCEND_OCCAMTOKEN_LOG_STATS=1
+export VLLM_ASCEND_OCCAMTOKEN_STRICT=1
 ```
 
 Current implementation status:
@@ -54,8 +55,13 @@ the mode to use for prefill/KV/TTFT experiments:
 
 ```bash
 export VLLM_ASCEND_OCCAMTOKEN_IMPL=true
+export VLLM_ASCEND_OCCAMTOKEN_STRICT=1
 MODEL_PATH=<QWEN3_5_MODEL_PATH> bash benchmarks/run_occamtoken_matrix.sh stage1-256
 ```
+
+`STRICT=1` makes unexpected processor/output structures fail fast instead of
+falling back to the original image replacement. Keep it enabled for formal
+experiments so a run cannot silently skip true sparsity.
 
 In `full` with `true`, Stage-I performs true token removal and Stage-II does
 nothing. This keeps the first performance milestone clean: measure real Stage-I
