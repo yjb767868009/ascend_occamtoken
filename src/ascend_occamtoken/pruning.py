@@ -95,15 +95,31 @@ def prune_stage1_masked(
     embeddings: torch.Tensor,
     config: OccamTokenConfig,
 ) -> tuple[torch.Tensor, PruneStats]:
-    budget = config.stage1_budget(int(embeddings.shape[0]))
-    scores = stage1_scores(embeddings, config)
-    keep = topk_indices(scores, budget)
+    keep = stage1_keep_indices(embeddings, config)
     pruned = mask_pruned_embeddings(
         embeddings,
         keep,
         replacement=config.replacement,
     )
     return pruned, PruneStats("stage1_masked", int(embeddings.shape[0]), int(keep.numel()))
+
+
+def stage1_keep_indices(
+    embeddings: torch.Tensor,
+    config: OccamTokenConfig,
+) -> torch.Tensor:
+    budget = config.stage1_budget(int(embeddings.shape[0]))
+    scores = stage1_scores(embeddings, config)
+    return topk_indices(scores, budget)
+
+
+def prune_stage1_true(
+    embeddings: torch.Tensor,
+    config: OccamTokenConfig,
+) -> tuple[torch.Tensor, PruneStats]:
+    keep = stage1_keep_indices(embeddings, config)
+    pruned = embeddings.index_select(0, keep)
+    return pruned, PruneStats("stage1_true", int(embeddings.shape[0]), int(keep.numel()))
 
 
 def prune_stage2_masked(
@@ -138,4 +154,3 @@ def select_text_window(
         return text_embeddings
     tail = min(question_tail_tokens, max_text_tokens, int(text_embeddings.shape[0]))
     return text_embeddings[-tail:]
-

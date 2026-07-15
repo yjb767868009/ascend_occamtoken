@@ -8,6 +8,7 @@ from typing import Literal
 
 
 StageMode = Literal["off", "fixed", "stage1", "stage2", "full"]
+ImplementationMode = Literal["masked", "true"]
 ReplacementMode = Literal["zero", "mean"]
 Stage1Scorer = Literal["norm", "mean_similarity"]
 Stage2Scorer = Literal["text_similarity"]
@@ -43,13 +44,14 @@ def _env_str(name: str, default: str) -> str:
 class OccamTokenConfig:
     """Environment-backed OccamToken settings.
 
-    The first implementation supports masked pruning only. It keeps the visual
-    token count unchanged and replaces pruned embeddings, which is useful for
-    correctness and quality ablations before implementing true token removal.
+    ``masked`` keeps the visual token count unchanged and replaces pruned
+    embeddings. ``true`` reduces image placeholders and image embeddings before
+    scheduling/merge, so the language model sees fewer visual tokens.
     """
 
     enabled: bool = False
     stage: StageMode = "off"
+    implementation: ImplementationMode = "masked"
     target_ratio: float = 0.125
     target_tokens: int = 0
     stage1_ratio: float = 0.25
@@ -68,6 +70,13 @@ class OccamTokenConfig:
         stage = _env_str("VLLM_ASCEND_OCCAMTOKEN_STAGE", "off").lower()
         if stage not in {"off", "fixed", "stage1", "stage2", "full"}:
             raise ValueError(f"Unsupported VLLM_ASCEND_OCCAMTOKEN_STAGE={stage!r}")
+
+        implementation = _env_str("VLLM_ASCEND_OCCAMTOKEN_IMPL", "masked").lower()
+        if implementation not in {"masked", "true"}:
+            raise ValueError(
+                "Unsupported VLLM_ASCEND_OCCAMTOKEN_IMPL="
+                f"{implementation!r}"
+            )
 
         replacement = _env_str("VLLM_ASCEND_OCCAMTOKEN_REPLACEMENT", "mean").lower()
         if replacement not in {"zero", "mean"}:
@@ -95,6 +104,7 @@ class OccamTokenConfig:
         return cls(
             enabled=enabled,
             stage=stage,  # type: ignore[arg-type]
+            implementation=implementation,  # type: ignore[arg-type]
             target_ratio=_env_float("VLLM_ASCEND_OCCAMTOKEN_TARGET_RATIO", 0.125),
             target_tokens=_env_int("VLLM_ASCEND_OCCAMTOKEN_TARGET_TOKENS", 0),
             stage1_ratio=_env_float("VLLM_ASCEND_OCCAMTOKEN_STAGE1_RATIO", 0.25),
@@ -120,6 +130,8 @@ class OccamTokenConfig:
         return self.active() and self.stage in {"stage2", "full"}
 
     def stage1_budget(self, num_tokens: int) -> int:
+        if self.stage == "fixed":
+            return self.final_budget(num_tokens)
         return _budget(
             num_tokens,
             tokens=self.stage1_tokens,
@@ -135,6 +147,12 @@ class OccamTokenConfig:
             min_tokens=self.min_tokens,
         )
 
+    def true_sparse_active(self) -> bool:
+        return self.active() and self.implementation == "true"
+
+    def true_stage1_active(self) -> bool:
+        return self.true_sparse_active() and self.stage1_active()
+
 
 def _budget(num_tokens: int, *, tokens: int, ratio: float, min_tokens: int) -> int:
     if num_tokens <= 0:
@@ -145,4 +163,3 @@ def _budget(num_tokens: int, *, tokens: int, ratio: float, min_tokens: int) -> i
         budget = int(round(num_tokens * ratio))
     budget = max(min_tokens, budget)
     return min(num_tokens, budget)
-

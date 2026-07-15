@@ -83,6 +83,7 @@ Suggested environment variables:
 
 ```bash
 VLLM_ASCEND_OCCAMTOKEN_ENABLE=1
+VLLM_ASCEND_OCCAMTOKEN_IMPL=true         # masked | true
 VLLM_ASCEND_OCCAMTOKEN_STAGE=full        # off | stage1 | stage2 | full | fixed
 VLLM_ASCEND_OCCAMTOKEN_TARGET_RATIO=0.125
 VLLM_ASCEND_OCCAMTOKEN_STAGE1_RATIO=0.25
@@ -104,14 +105,15 @@ Patch targets:
 
 - `Qwen3_5ForConditionalGeneration._process_image_input`
 - `Qwen3_5ForConditionalGeneration.embed_input_ids`
+- `Qwen3VLMultiModalProcessor._get_prompt_updates`
 - optional later target: selected Qwen3.5 decoder layer forward for Stage-II pruning.
 
 Implementation should be incremental:
 
 1. Phase A: fixed-budget pruning after image embeddings are created.
 2. Phase B: Stage-I-only dynamic image pruning.
-3. Phase C: Stage-II-only query-aware pruning.
-4. Phase D: full Stage-I + Stage-II.
+3. Phase C: Stage-II-only query-aware masked pruning for quality ablation only.
+4. Phase D: keep `impl=true` as Stage-I true removal only until Stage-I performance is validated.
 
 ## Important Implementation Detail
 
@@ -163,11 +165,12 @@ Cons:
 - Must update `is_multimodal`, replacement token positions, M-RoPE positions, and possibly request metadata.
 - Needs careful testing with multi-image RAG inputs.
 
-Recommendation:
+Current status:
 
-- Use Option 1 only as a smoke-test baseline.
-- Use Option 2 for the real experiment.
-- Implement Option 2 through vLLM Ascend patch modules, not by editing vLLM source.
+- Option 1 is implemented for all stages.
+- Option 2 is implemented for image-token fixed/Stage-I pruning.
+- In `full` with `VLLM_ASCEND_OCCAMTOKEN_IMPL=true`, Stage-I is true token removal and Stage-II is intentionally a no-op.
+- True Stage-II token removal is not implemented because it happens after text embeddings are available and would require scheduler/attention metadata-safe changes.
 
 ## Experimental Matrix
 
