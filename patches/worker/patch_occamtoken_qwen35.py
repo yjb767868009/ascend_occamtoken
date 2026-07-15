@@ -7,6 +7,8 @@ before vLLM schedules the prompt, so the language model sees fewer image tokens.
 
 from __future__ import annotations
 
+import sys
+
 import torch
 
 from vllm_ascend.occamtoken.config import OccamTokenConfig
@@ -28,6 +30,70 @@ from vllm.model_executor.models.qwen3_vl import Qwen3VLMultiModalProcessor
 
 _ORIG_PROCESS_IMAGE_INPUT = Qwen3_5ForConditionalGeneration._process_image_input
 _ORIG_GET_PROMPT_UPDATES = Qwen3VLMultiModalProcessor._get_prompt_updates
+_FALLBACK_LOGGED = False
+
+
+def _describe_out_mm_kwargs(out_mm_kwargs, item_idx: int) -> str:
+    try:
+        top_keys = list(out_mm_kwargs.keys())
+    except AttributeError:
+        return f"out_mm_kwargs_type={type(out_mm_kwargs).__name__}"
+
+    image_items = out_mm_kwargs.get("image")
+    image_len = len(image_items) if hasattr(image_items, "__len__") else "unknown"
+    parts = [
+        f"out_mm_kwargs_keys={top_keys}",
+        f"image_items_type={type(image_items).__name__}",
+        f"image_items_len={image_len}",
+        f"item_idx={item_idx}",
+    ]
+
+    try:
+        out_item = image_items[item_idx]
+        parts.append(f"image_item_type={type(out_item).__name__}")
+        if hasattr(out_item, "keys"):
+            item_keys = list(out_item.keys())
+            parts.append(f"image_item_keys={item_keys}")
+            grid_field = out_item.get("image_grid_thw")
+            parts.append(f"image_grid_thw_type={type(grid_field).__name__}")
+            grid_data = getattr(grid_field, "data", None)
+            if grid_data is not None:
+                parts.append(f"image_grid_thw_data_type={type(grid_data).__name__}")
+    except Exception as exc:  # pragma: no cover - diagnostics only.
+        parts.append(f"describe_error={type(exc).__name__}: {exc}")
+
+    return " ".join(parts)
+
+
+def _log_prompt_update_fallback(reason: Exception, out_mm_kwargs, item_idx: int) -> None:
+    global _FALLBACK_LOGGED
+    if _FALLBACK_LOGGED:
+        return
+    _FALLBACK_LOGGED = True
+    print(
+        "[occamtoken] true Stage-I prompt replacement fallback: "
+        f"reason={type(reason).__name__}: {reason}; "
+        f"{_describe_out_mm_kwargs(out_mm_kwargs, item_idx)}",
+        file=sys.stderr,
+    )
+
+
+def _log_processor_fallback(reason: str, processor) -> None:
+    global _FALLBACK_LOGGED
+    if _FALLBACK_LOGGED:
+        return
+    _FALLBACK_LOGGED = True
+    attrs = sorted(
+        name
+        for name in dir(processor)
+        if "image" in name and not name.startswith("__")
+    )
+    print(
+        "[occamtoken] true Stage-I prompt replacement fallback: "
+        f"reason={reason}; processor_type={type(processor).__name__}; "
+        f"image_attrs={attrs}",
+        file=sys.stderr,
+    )
 
 
 def _patched_get_prompt_updates(
@@ -48,21 +114,49 @@ def _patched_get_prompt_updates(
     if not config.true_stage1_active():
         return updates
 
+    original_image_update = next((u for u in updates if u.modality == "image"), None)
+    if original_image_update is None:
+        return updates
+
     get_processor = getattr(self.info, "get_" + "hf" + "_processor")
     processor = get_processor(**processor_mm_kwargs)
+    image_token_id = getattr(processor, "image_token_id", None)
+    image_token = getattr(processor, "image_token", None)
+    if image_token_id is None or image_token is None:
+        _log_processor_fallback(
+            "processor_missing_image_token_or_id",
+            processor,
+        )
+        return updates
+
     image_processor = self.info.get_image_processor(**processor_mm_kwargs)
     merge_length = image_processor.merge_size**2
 
+    def fallback_image_replacement(item_idx: int):
+        replacement = original_image_update.content
+        if callable(replacement):
+            return replacement(item_idx)
+        return replacement
+
     def get_image_replacement_qwen35_occamtoken(item_idx: int):
-        out_item = out_mm_kwargs["image"][item_idx]
-        grid_thw = out_item["image_grid_thw"].data
-        num_tokens = int(grid_thw.prod()) // merge_length
+        try:
+            image_items = out_mm_kwargs["image"]
+            out_item = image_items[item_idx]
+            grid_field = out_item["image_grid_thw"]
+            grid_thw = getattr(grid_field, "data", grid_field)
+            if not isinstance(grid_thw, torch.Tensor):
+                grid_thw = torch.as_tensor(grid_thw)
+            num_tokens = int(grid_thw.prod().item()) // merge_length
+        except (KeyError, IndexError, TypeError, AttributeError, RuntimeError) as exc:
+            _log_prompt_update_fallback(exc, out_mm_kwargs, item_idx)
+            return fallback_image_replacement(item_idx)
+
         budget = config.stage1_budget(num_tokens)
-        return [processor.image_token_id] * budget
+        return [image_token_id] * budget
 
     image_update = PromptReplacement(
         modality="image",
-        target=processor.image_token,
+        target=image_token,
         replacement=get_image_replacement_qwen35_occamtoken,
     )
 
