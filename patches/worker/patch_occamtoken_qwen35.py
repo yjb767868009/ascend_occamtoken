@@ -117,14 +117,14 @@ def _log_budget_mismatch(message: str) -> None:
 def _patched_get_prompt_updates(
     self,
     mm_items,
-    processor_mm_kwargs,
+    hf_processor_mm_kwargs,
     out_mm_kwargs,
 ):
     updates = list(
         _ORIG_GET_PROMPT_UPDATES(
             self,
             mm_items,
-            processor_mm_kwargs,
+            hf_processor_mm_kwargs,
             out_mm_kwargs,
         )
     )
@@ -137,7 +137,7 @@ def _patched_get_prompt_updates(
         return updates
 
     get_processor = getattr(self.info, "get_" + "hf" + "_processor")
-    processor = get_processor(**processor_mm_kwargs)
+    processor = get_processor(**hf_processor_mm_kwargs)
     image_token_id = getattr(processor, "image_token_id", None)
     image_token = getattr(processor, "image_token", None)
     if image_token_id is None or image_token is None:
@@ -153,7 +153,7 @@ def _patched_get_prompt_updates(
         )
         return updates
 
-    image_processor = self.info.get_image_processor(**processor_mm_kwargs)
+    image_processor = self.info.get_image_processor(**hf_processor_mm_kwargs)
     merge_length = image_processor.merge_size**2
 
     def fallback_image_replacement(item_idx: int):
