@@ -1,145 +1,67 @@
-# Handoff: Phase2 Direct Encoder Compatibility
+# Handoff: Phase2 Logging Increment
 
-This file only records the changes and cautions added after the previous working Stage-I true sparse implementation.
+This file records only the delta from the previous commit/stage. Full project
+context stays in `README.md` and `docs/`.
 
-## What Changed
+## Changed In This Increment
 
-Added an early M-RoPE patch helper:
-
-```text
-src/ascend_occamtoken/mrope.py
-```
-
-It exposes:
+`src/ascend_occamtoken/phase2.py` now logs per-image Stage-I true pruning stats
+from the direct encoder helper:
 
 ```python
-from vllm_ascend.occamtoken.mrope import install_mrope_patch
+pruned, item_stats = prune_stage1_true(image_embeds, config)
+stats.append(item_stats)
+log_stats(stats)
 ```
 
-Added a phase2 direct-encoder pruning helper:
+With `VLLM_ASCEND_OCCAMTOKEN_LOG_STATS=1`, each phase2 direct-encoder cache miss
+should emit one line per locally encoded image:
 
 ```text
-src/ascend_occamtoken/phase2.py
+[occamtoken] stage=stage1 original=... kept=... retention=...
 ```
 
-It exposes:
+`tests/test_pruning.py` adds coverage that two local image outputs produce two
+`[occamtoken]` log lines.
+
+## Why This Was Added
+
+In the stock worker path, `_patched_process_image_input()` already logged stats.
+The internal phase2 direct-encoder path used `prune_phase2_local_image_outputs()`
+but previously discarded `_stats`, so successful phase2 pruning could be silent.
+
+This made multi-image tests ambiguous: seeing only one `[occamtoken]` line did
+not prove that only one image was pruned.
+
+## Important Debug Note
+
+If `[occamtoken]` appears only once and later requests are silent, first check
+whether later requests hit the multimodal encoder cache. In
+`vllm_ascend/worker/pcp_utils.py`, scheduled encoder inputs are skipped when
+`mm_feature.identifier` is already in `encoder_cache`. Cache hits reuse the
+stored encoder output and do not call `prune_phase2_local_image_outputs()` again.
+
+Temporary phase2 debug print:
 
 ```python
-from vllm_ascend.occamtoken.phase2 import prune_phase2_local_image_outputs
-```
-
-Updated:
-
-```text
-patches/worker/patch_occamtoken_qwen35.py
-```
-
-The worker patch now calls `install_mrope_patch()` instead of carrying a separate inline M-RoPE monkey patch.
-
-Added detailed internal patch note:
-
-```text
-docs/phase2_direct_encoder_patch.md
-```
-
-## Why This Was Needed
-
-Two failures appeared in optimized internal phase2/direct-encoder mode.
-
-First failure:
-
-```text
-qwen3_vl.py::_get_mrope_input_positions
-ValueError: all elements of broadcast shape must be non-negative
-```
-
-Cause:
-
-```text
-OccamToken shortened image placeholders, for example 88 -> 79.
-Stock Qwen3VL M-RoPE still advanced by original image_grid_thw count, for example 88.
-For multi-image prompts, the next image offset became smaller than st.
-text_len became negative.
-```
-
-Second failure:
-
-```text
-local encoder rows mismatch: got 2916, expected rows=2624
-```
-
-Cause:
-
-```text
-Phase2 direct encoder validates encoder row count before model-level _patched_process_image_input can prune.
-The encoder returns original rows.
-The expected row count already comes from shortened placeholders.
-```
-
-## Internal Phase2 Code Changes Needed
-
-Only the internal phase2/direct-encoder code needs to be changed, assuming the two helper modules above are already importable from `vllm_ascend.occamtoken`.
-
-At the top of internal `patch_mm_opt/phase2.py` or equivalent plugin module:
-
-```python
-from vllm_ascend.occamtoken.mrope import install_mrope_patch
-from vllm_ascend.occamtoken.phase2 import prune_phase2_local_image_outputs
-
-install_mrope_patch()
-```
-
-Important: `install_mrope_patch()` must run before `_init_mrope_positions()`. If the stack trace still points to stock `site-packages/vllm/model_executor/models/qwen3_vl.py::_get_mrope_input_positions`, the patch was loaded too late or not loaded in that worker process.
-
-In internal `_run_local_encode()`, after `_encode_local_images()` returns and before `torch.cat` / row-count validation:
-
-```python
-local_outputs = _encode_local_images(
-    self, model, processor, my_pil_images, my_image_indices,
+print(
+    f"[occamtoken-debug] phase2 local_outputs={len(local_outputs)} "
+    f"my_image_indices={my_image_indices} "
+    f"output_sizes={[output_sizes[i] for i in my_image_indices]}",
+    flush=True,
 )
-
-local_outputs = prune_phase2_local_image_outputs(
-    local_outputs,
-    my_image_indices=my_image_indices,
-    output_sizes=output_sizes,
-)
-
-local_cat = torch.cat([out.contiguous() for out in local_outputs], dim=0)
 ```
 
-Do not wait for `_patched_process_image_input`; in the phase2 direct path, row-count validation happens before that hook can run.
-
-## Cautions
-
-`prune_phase2_local_image_outputs()` assumes `local_outputs` is already split per image. This matches the internal `_encode_local_images()` snippet:
+Temporary PCP scheduling debug print:
 
 ```python
-sizes = (grid_thw.prod(-1) // merge_size // merge_size).tolist()
-batch_outputs = list(image_embeds.split(sizes))
-local_outputs.extend(batch_outputs)
+print(
+    f"[occamtoken-debug] mm_hash={mm_hash} "
+    f"cache_hit={mm_hash in encoder_cache}",
+    flush=True,
+)
 ```
 
-The helper intentionally raises if the pruned length does not match `output_sizes[global_image_idx]`. Do not silently fallback in performance tests; a mismatch means placeholder pruning and encoder pruning are inconsistent.
-
-The M-RoPE patch is length-correct but not yet top-k-index-correct. It assigns positions to the first N grid positions for the shortened placeholder span. This should stop the multi-image crash, but a future quality improvement should propagate actual Stage-I keep indices into M-RoPE position generation.
-
-True Stage-II is still not implemented. In true mode, keep testing Stage-I only.
-
-MoE internals still do not need changes. Pruning happens before the language model; MoE sees a shorter sequence.
-
-## Next Smoke Test
-
-Recommended order:
-
-```text
-8k text + 2 images, ratio=0.9
-8k text + 20 images, ratio=0.9
-```
-
-Expected:
-
-```text
-no negative text_len in qwen3_vl.py
-no phase2 local encoder rows mismatch
-prefill reaches decode
-```
+When changing pruning ratio or token budget, restart the worker or clear the
+multimodal encoder cache. The cache key may be image-derived, so cached encoder
+outputs can hide a new OccamToken config.

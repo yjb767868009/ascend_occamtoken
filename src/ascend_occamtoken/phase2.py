@@ -13,6 +13,7 @@ from collections.abc import Sequence
 import torch
 
 from .config import OccamTokenConfig
+from .logging import log_stats
 from .pruning import prune_stage1_true
 
 
@@ -48,10 +49,11 @@ def prune_phase2_local_image_outputs(
         )
 
     pruned_outputs: list[torch.Tensor] = []
+    stats = []
     for local_pos, (global_image_idx, image_embeds) in enumerate(
         zip(my_image_indices, local_outputs, strict=True)
     ):
-        pruned, _stats = prune_stage1_true(image_embeds, config)
+        pruned, item_stats = prune_stage1_true(image_embeds, config)
         expected = int(output_sizes[int(global_image_idx)])
         actual = int(pruned.shape[0])
         if actual != expected:
@@ -68,5 +70,7 @@ def prune_phase2_local_image_outputs(
                 f"stage1_tokens={config.stage1_tokens}"
             )
         pruned_outputs.append(pruned)
+        stats.append(item_stats)
 
+    log_stats(stats)
     return pruned_outputs

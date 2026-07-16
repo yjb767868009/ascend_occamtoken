@@ -75,6 +75,33 @@ def test_phase2_helper_prunes_each_local_image_to_output_size():
     assert [item.shape[0] for item in pruned] == [2, 3]
 
 
+def test_phase2_helper_logs_each_pruned_image(monkeypatch, capsys):
+    monkeypatch.setenv("VLLM_ASCEND_OCCAMTOKEN_LOG_STATS", "1")
+    config = OccamTokenConfig(
+        enabled=True,
+        stage="stage1",
+        implementation="true",
+        stage1_ratio=0.5,
+        min_tokens=1,
+    )
+    outputs = [
+        torch.arange(16, dtype=torch.float32).view(4, 4),
+        torch.arange(24, dtype=torch.float32).view(6, 4),
+    ]
+
+    prune_phase2_local_image_outputs(
+        outputs,
+        my_image_indices=[0, 1],
+        output_sizes=[2, 3],
+        config=config,
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err.count("[occamtoken]") == 2
+    assert "original=4 kept=2" in captured.err
+    assert "original=6 kept=3" in captured.err
+
+
 def test_stage2_masked_uses_text_similarity():
     config = OccamTokenConfig(enabled=True, stage="stage2", target_tokens=1, min_tokens=1)
     visual = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
