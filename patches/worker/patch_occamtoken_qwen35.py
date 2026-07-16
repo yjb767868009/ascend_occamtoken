@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import sys
 
-import numpy as np
 import torch
 
 from vllm_ascend.occamtoken.config import OccamTokenConfig
 from vllm_ascend.occamtoken.logging import log_stats
+from vllm_ascend.occamtoken.mrope import install_mrope_patch
 from vllm_ascend.occamtoken.pruning import (
     prune_stage1_masked,
     prune_stage1_true,
@@ -27,132 +27,14 @@ from vllm.model_executor.models.qwen3_5 import (
     _require_is_multimodal,
 )
 from vllm.model_executor.models.qwen3_vl import Qwen3VLMultiModalProcessor
-from vllm.model_executor.models.qwen3_vl import Qwen3VLForConditionalGeneration
 
 
 _ORIG_PROCESS_IMAGE_INPUT = Qwen3_5ForConditionalGeneration._process_image_input
 _ORIG_GET_PROMPT_UPDATES = Qwen3VLMultiModalProcessor._get_prompt_updates
-_ORIG_GET_MROPE_INPUT_POSITIONS = (
-    Qwen3VLForConditionalGeneration._get_mrope_input_positions
-)
-_ORIG_ITER_MM_GRID_HW = Qwen3VLForConditionalGeneration._iter_mm_grid_hw
 _FALLBACK_LOGGED = False
 _BUDGET_MISMATCH_LOGGED = False
 _DISABLE_NEXT_TRUE_IMAGE_PRUNE = False
 _PENDING_IMAGE_BUDGETS: list[tuple[int, int]] = []
-
-
-def _count_contiguous_tokens(input_tokens: list[int], offset: int, token_id: int) -> int:
-    count = 0
-    for token in input_tokens[offset:]:
-        if token != token_id:
-            break
-        count += 1
-    return count
-
-
-def _iter_mm_grid_hw_occamtoken(
-    input_tokens,
-    mm_features,
-    *,
-    video_token_id,
-    vision_start_token_id,
-    vision_end_token_id,
-    spatial_merge_size,
-):
-    sorted_features = sorted(mm_features, key=lambda f: f.mm_position.offset)
-    for feature_idx, mm_feature in enumerate(sorted_features):
-        offset = mm_feature.mm_position.offset
-        if mm_feature.modality == "image":
-            # Qwen3VL derives image token count from the original grid. In true
-            # sparse mode the prompt already contains fewer image placeholders,
-            # so M-RoPE must use the actual placeholder span instead.
-            image_token_id = input_tokens[offset]
-            t, h, w = mm_feature.data["image_grid_thw"].data.tolist()
-            assert t == 1, f"Image must have 1 frame, got {t}"
-            llm_grid_h = h // spatial_merge_size
-            llm_grid_w = w // spatial_merge_size
-            actual_num_tokens = _count_contiguous_tokens(
-                input_tokens, offset, image_token_id
-            )
-            if feature_idx + 1 < len(sorted_features):
-                next_offset = sorted_features[feature_idx + 1].mm_position.offset
-                actual_num_tokens = min(actual_num_tokens, next_offset - offset)
-            yield offset, llm_grid_h, llm_grid_w, actual_num_tokens
-        elif mm_feature.modality == "video":
-            yield from _ORIG_ITER_MM_GRID_HW(
-                input_tokens,
-                [mm_feature],
-                video_token_id=video_token_id,
-                vision_start_token_id=vision_start_token_id,
-                vision_end_token_id=vision_end_token_id,
-                spatial_merge_size=spatial_merge_size,
-            )
-        else:
-            raise ValueError(f"Unsupported modality: {mm_feature.modality}")
-
-
-def _get_mrope_input_positions_occamtoken(input_tokens, mm_features, config):
-    llm_pos_ids_list = []
-    st = 0
-    for (
-        offset,
-        llm_grid_h,
-        llm_grid_w,
-        actual_num_tokens,
-    ) in _iter_mm_grid_hw_occamtoken(
-        input_tokens,
-        mm_features,
-        video_token_id=config.video_token_id,
-        vision_start_token_id=config.vision_start_token_id,
-        vision_end_token_id=config.vision_end_token_id,
-        spatial_merge_size=config.vision_config.spatial_merge_size,
-    ):
-        if actual_num_tokens == 0:
-            continue
-
-        text_len = offset - st
-        if text_len < 0:
-            raise ValueError(
-                "OccamToken true Stage-I M-RoPE alignment failed: "
-                f"offset={offset} previous_end={st} "
-                f"actual_num_tokens={actual_num_tokens}"
-            )
-        st_idx = llm_pos_ids_list[-1].max() + 1 if llm_pos_ids_list else 0
-        llm_pos_ids_list.append(
-            np.broadcast_to(np.arange(text_len), (3, text_len)) + st_idx
-        )
-
-        expected_tokens_per_frame = llm_grid_h * llm_grid_w
-        if actual_num_tokens > expected_tokens_per_frame:
-            num_logical_frames = actual_num_tokens // expected_tokens_per_frame
-            remainder = actual_num_tokens % expected_tokens_per_frame
-            for _ in range(num_logical_frames):
-                grid_indices = np.indices((1, llm_grid_h, llm_grid_w)).reshape(3, -1)
-                llm_pos_ids_list.append(grid_indices + text_len + st_idx)
-                st_idx = llm_pos_ids_list[-1].max() + 1
-                text_len = 0
-            if remainder > 0:
-                full_grid = np.indices((1, llm_grid_h, llm_grid_w)).reshape(3, -1)
-                llm_pos_ids_list.append(full_grid[:, :remainder] + text_len + st_idx)
-        else:
-            full_grid = np.indices((1, llm_grid_h, llm_grid_w)).reshape(3, -1)
-            llm_pos_ids_list.append(
-                full_grid[:, :actual_num_tokens] + text_len + st_idx
-            )
-
-        st = offset + actual_num_tokens
-
-    if st < len(input_tokens):
-        st_idx = llm_pos_ids_list[-1].max() + 1 if llm_pos_ids_list else 0
-        text_len = len(input_tokens) - st
-        llm_pos_ids_list.append(
-            np.broadcast_to(np.arange(text_len), (3, text_len)) + st_idx
-        )
-
-    llm_positions = np.concatenate(llm_pos_ids_list, axis=1).reshape(3, -1)
-    mrope_position_delta = (llm_positions.max() + 1 - len(input_tokens)).item()
-    return torch.from_numpy(llm_positions), mrope_position_delta
 
 
 def _describe_out_mm_kwargs(out_mm_kwargs, item_idx: int) -> str:
@@ -408,6 +290,4 @@ def _patched_embed_input_ids(
 Qwen3_5ForConditionalGeneration._process_image_input = _patched_process_image_input
 Qwen3_5ForConditionalGeneration.embed_input_ids = _patched_embed_input_ids
 Qwen3VLMultiModalProcessor._get_prompt_updates = _patched_get_prompt_updates
-Qwen3VLForConditionalGeneration._get_mrope_input_positions = staticmethod(
-    _get_mrope_input_positions_occamtoken
-)
+install_mrope_patch()

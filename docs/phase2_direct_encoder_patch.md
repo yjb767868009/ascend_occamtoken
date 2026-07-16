@@ -37,8 +37,16 @@ returns per-image encoder outputs and before `torch.cat` / row-count validation.
 In your internal `patch_mm_opt/phase2.py`, add:
 
 ```python
+from vllm_ascend.occamtoken.mrope import install_mrope_patch
 from vllm_ascend.occamtoken.phase2 import prune_phase2_local_image_outputs
+
+install_mrope_patch()
 ```
+
+This import-time call is required because `_init_mrope_positions()` runs before
+the direct encoder path. If the patch is installed too late, the worker will
+still crash in stock `qwen3_vl.py::_get_mrope_input_positions` with a negative
+`text_len`.
 
 Then in `_run_local_encode`, change:
 

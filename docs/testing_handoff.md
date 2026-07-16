@@ -132,6 +132,18 @@ With strict mode enabled, unexpected processor/output structures fail fast. With
 strict mode disabled, the patch prints one fallback diagnostic and uses vLLM's
 original image replacement for that request.
 
+If an optimized phase2/direct-encoder path is used, install the M-RoPE patch at
+plugin import time:
+
+```python
+from vllm_ascend.occamtoken.mrope import install_mrope_patch
+
+install_mrope_patch()
+```
+
+If the worker still crashes inside stock `qwen3_vl.py::_get_mrope_input_positions`
+with negative `text_len`, this patch was not loaded early enough.
+
 Modes:
 
 ```bash
