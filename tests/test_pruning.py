@@ -1,6 +1,7 @@
 import torch
 
 from ascend_occamtoken.config import OccamTokenConfig
+from ascend_occamtoken.phase2 import prune_phase2_local_image_outputs
 from ascend_occamtoken.pruning import (
     prune_stage1_masked,
     prune_stage1_true,
@@ -49,6 +50,29 @@ def test_fixed_stage_uses_target_budget_for_first_pass():
     )
 
     assert config.stage1_budget(8) == 3
+
+
+def test_phase2_helper_prunes_each_local_image_to_output_size():
+    config = OccamTokenConfig(
+        enabled=True,
+        stage="stage1",
+        implementation="true",
+        stage1_ratio=0.5,
+        min_tokens=1,
+    )
+    outputs = [
+        torch.arange(16, dtype=torch.float32).view(4, 4),
+        torch.arange(24, dtype=torch.float32).view(6, 4),
+    ]
+
+    pruned = prune_phase2_local_image_outputs(
+        outputs,
+        my_image_indices=[2, 4],
+        output_sizes=[0, 0, 2, 0, 3],
+        config=config,
+    )
+
+    assert [item.shape[0] for item in pruned] == [2, 3]
 
 
 def test_stage2_masked_uses_text_similarity():
