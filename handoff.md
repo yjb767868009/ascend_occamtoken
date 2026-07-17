@@ -1,78 +1,91 @@
-# Handoff: Stage-II-Lite Increment
+# Handoff: Full True Removal Increment
 
 This file records only the delta from the previous commit/stage. Full project
 context stays in `README.md` and `docs/`.
 
 ## Changed In This Increment
 
-`patches/worker/patch_occamtoken_qwen35.py` now allows Stage-II-lite to run even
-when `VLLM_ASCEND_OCCAMTOKEN_IMPL=true`:
+`stage=full, impl=true` now performs physical visual token removal to the final
+target budget.
 
-```python
-if config.stage2_active():
-    ...
-    pruned, item_stats = prune_stage2_masked(...)
-```
-
-Effect:
+Before this change:
 
 ```text
-stage=full, impl=true:
-  Stage-I: true image-token removal before scheduling/merge.
-  Stage-II-lite: query-aware masked pruning on the remaining visual embeddings.
+full,true:
+  Stage-I true removal to STAGE1_RATIO
+  Stage-II-lite masked pruning to TARGET_RATIO
+  scheduled/KV length stayed at Stage-I length
 ```
 
-`README.md` was updated to state this explicitly.
-
-`src/ascend_occamtoken/config.py` adds `OccamTokenConfig.stage2_budget()`.
-For `stage=full, impl=true` with ratio-based budgets, Stage-II-lite maps the
-final target ratio back onto the already-shortened Stage-I sequence:
+After this change:
 
 ```text
-stage1_ratio=0.25, target_ratio=0.125
-original 2048 -> Stage-I 512 -> Stage-II-lite budget 256
+full,true:
+  prompt image placeholders use TARGET_RATIO / TARGET_TOKENS
+  image embeddings are pruned to the same final budget
+  scheduled/KV length follows the final budget
 ```
 
-This avoids accidentally applying `target_ratio` twice:
+Example:
 
 ```text
-wrong: 2048 -> 512 -> 64
+original image tokens = 2048
+STAGE1_RATIO = 0.25
+TARGET_RATIO = 0.125
+
+stage1,true -> 512 physical image tokens
+full,true   -> 256 physical image tokens
 ```
 
-## Why This Was Added
+## Code Changes
 
-The previous true/full path was Stage-I true removal only; Stage-II was skipped
-in true mode. This made it impossible to test whether query-aware Stage-II helps
-accuracy after Stage-I on the user's Qwen3.5 RAG workload.
+`src/ascend_occamtoken/config.py`
 
-This increment gives a low-risk Stage-II ablation:
+- Added `OccamTokenConfig.true_image_budget()`.
+- `stage1,true` still uses `stage1_budget()`.
+- `full,true` uses `final_budget()`.
 
-```text
-stage1 true only:
-  performance gain from shorter visual sequence
+`src/ascend_occamtoken/pruning.py`
 
-full true:
-  same Stage-I sequence length, plus Stage-II-lite quality reranking/masking
-```
+- Added `prune_true_image_tokens()`.
+- It uses the true physical budget and logs `stage=full_true` for full mode.
 
-So compare `stage=stage1, impl=true` against `stage=full, impl=true` at the same
-`STAGE1_RATIO`.
+`patches/worker/patch_occamtoken_qwen35.py`
+
+- Prompt replacement now uses `config.true_image_budget(num_tokens)`.
+- `_patched_process_image_input()` now uses `prune_true_image_tokens()`.
+- Stage-II masked pruning is disabled again for true sparse mode, because
+  `full,true` is now physically shortened to the final budget.
+
+`src/ascend_occamtoken/phase2.py`
+
+- The phase2 direct-encoder helper now uses `prune_true_image_tokens()` so its
+  output row count matches the final placeholder count in `full,true`.
 
 ## Important Limitation
 
-This is not true Stage-II token removal. Stage-II-lite runs inside
-`embed_input_ids()`, after vLLM has already scheduled the prompt and built the
-multimodal mask. At that point the code can safely replace/mask embeddings, but
-cannot shorten `input_ids`, `is_multimodal`, M-RoPE positions, KV allocation, or
-scheduler metadata.
-
-Expected logs for `stage=full, impl=true`:
+This is true removal to the final budget, but it is not late query-aware true
+removal. The query-aware Stage-II scorer needs text embeddings, which are
+available only after vLLM has already scheduled the prompt and allocated token
+metadata. Removing tokens at that point requires scheduler/request-state changes:
 
 ```text
-[occamtoken] stage=stage1_true ...
-[occamtoken] stage=stage2_masked ...
+input_ids
+positions / M-RoPE positions
+is_multimodal mask
+slot mapping / KV metadata
+multimodal embedding rows
 ```
 
-For actual true Stage-II token removal, the next implementation must move
-query-aware pruning into a scheduler/PCP-safe point where the selected visual
-positions, M-RoPE positions, and multimodal embedding rows are updated together.
+The current increment gives the requested physical token reduction for
+`full,true` without attempting unsafe late sequence mutation.
+
+## Test Expectation
+
+For `stage=full, impl=true`, expect logs like:
+
+```text
+[occamtoken] stage=full_true original=... kept=...
+```
+
+Do not expect `stage=stage2_masked` in true mode after this change.

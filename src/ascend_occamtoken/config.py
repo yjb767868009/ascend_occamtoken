@@ -165,6 +165,11 @@ class OccamTokenConfig:
             )
         return self.final_budget(num_tokens)
 
+    def true_image_budget(self, num_tokens: int) -> int:
+        if self.true_sparse_active() and self.stage == "full":
+            return self.final_budget(num_tokens)
+        return self.stage1_budget(num_tokens)
+
     def true_sparse_active(self) -> bool:
         return self.active() and self.implementation == "true"
 

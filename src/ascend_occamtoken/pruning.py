@@ -122,6 +122,18 @@ def prune_stage1_true(
     return pruned, PruneStats("stage1_true", int(embeddings.shape[0]), int(keep.numel()))
 
 
+def prune_true_image_tokens(
+    embeddings: torch.Tensor,
+    config: OccamTokenConfig,
+) -> tuple[torch.Tensor, PruneStats]:
+    budget = config.true_image_budget(int(embeddings.shape[0]))
+    scores = stage1_scores(embeddings, config)
+    keep = topk_indices(scores, budget)
+    pruned = embeddings.index_select(0, keep)
+    stage = "full_true" if config.stage == "full" else "stage1_true"
+    return pruned, PruneStats(stage, int(embeddings.shape[0]), int(keep.numel()))
+
+
 def prune_stage2_masked(
     visual_embeddings: torch.Tensor,
     text_embeddings: torch.Tensor,

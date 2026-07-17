@@ -16,8 +16,8 @@ from vllm_ascend.occamtoken.logging import log_stats
 from vllm_ascend.occamtoken.mrope import install_mrope_patch
 from vllm_ascend.occamtoken.pruning import (
     prune_stage1_masked,
-    prune_stage1_true,
     prune_stage2_masked,
+    prune_true_image_tokens,
     select_text_window,
 )
 from vllm.multimodal.processing import PromptReplacement
@@ -182,7 +182,7 @@ def _patched_get_prompt_updates(
             _log_prompt_update_fallback(exc, out_mm_kwargs, item_idx)
             return fallback_image_replacement(item_idx)
 
-        budget = config.stage1_budget(num_tokens)
+        budget = config.true_image_budget(num_tokens)
         _PENDING_IMAGE_BUDGETS.append((num_tokens, budget))
         return [image_token_id] * budget
 
@@ -210,7 +210,7 @@ def _patched_process_image_input(self, image_input):
     stats = []
     for item_idx, image_embeds in enumerate(image_embeds_split):
         if config.true_stage1_active():
-            pruned, item_stats = prune_stage1_true(image_embeds, config)
+            pruned, item_stats = prune_true_image_tokens(image_embeds, config)
             if _PENDING_IMAGE_BUDGETS:
                 expected_original, expected_budget = _PENDING_IMAGE_BUDGETS.pop(0)
                 actual_original = int(image_embeds.shape[0])
@@ -260,7 +260,7 @@ def _patched_embed_input_ids(
 
     is_multimodal = _require_is_multimodal(is_multimodal)
 
-    if config.stage2_active():
+    if config.stage2_active() and not config.true_sparse_active():
         text_embeddings = inputs_embeds[~is_multimodal]
         text_embeddings = select_text_window(
             text_embeddings,
