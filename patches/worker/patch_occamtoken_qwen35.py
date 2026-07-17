@@ -259,6 +259,7 @@ def _patched_embed_input_ids(
         return inputs_embeds
 
     is_multimodal = _require_is_multimodal(is_multimodal)
+    self._occamtoken_last_is_multimodal = is_multimodal
 
     if config.stage2_active() and not config.true_sparse_active():
         text_embeddings = inputs_embeds[~is_multimodal]

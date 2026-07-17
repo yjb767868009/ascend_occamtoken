@@ -7,6 +7,7 @@ from ascend_occamtoken.pruning import (
     prune_stage1_true,
     prune_stage2_masked,
     select_text_window,
+    stage2_true_keep_mask,
 )
 
 
@@ -112,6 +113,40 @@ def test_stage2_masked_uses_text_similarity():
     assert pruned.shape == visual.shape
     assert stats.kept_tokens == 1
     assert torch.equal(pruned[1], visual[1])
+
+
+def test_stage2_true_keep_mask_keeps_text_and_relevant_images():
+    config = OccamTokenConfig(
+        enabled=True,
+        stage="full",
+        implementation="true",
+        target_tokens=1,
+        min_tokens=1,
+        stage2_layer=3,
+    )
+    hidden = torch.tensor(
+        [
+            [1.0, 0.0],  # text query
+            [0.0, 1.0],  # irrelevant image
+            [2.0, 0.0],  # relevant image
+            [0.0, 1.0],  # text
+        ]
+    )
+    image_mask = torch.tensor([False, True, True, False])
+    text_mask = ~image_mask
+
+    keep_mask, stats = stage2_true_keep_mask(
+        hidden,
+        image_mask=image_mask,
+        text_mask=text_mask,
+        target_image_tokens=1,
+        config=config,
+    )
+
+    assert keep_mask.tolist() == [True, False, True, True]
+    assert stats.stage == "stage2_true_layer3"
+    assert stats.original_tokens == 2
+    assert stats.kept_tokens == 1
 
 
 def test_select_text_window_prefers_tail():

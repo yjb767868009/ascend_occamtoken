@@ -16,6 +16,8 @@ cp "${ROOT_DIR}/patches/platform/patch_occamtoken.py" \
   "${TARGET_DIR}/vllm_ascend/patch/platform/patch_occamtoken.py"
 cp "${ROOT_DIR}/patches/worker/patch_occamtoken_qwen35.py" \
   "${TARGET_DIR}/vllm_ascend/patch/worker/patch_occamtoken_qwen35.py"
+cp "${ROOT_DIR}/patches/worker/patch_occamtoken_stage2_decoder.py" \
+  "${TARGET_DIR}/vllm_ascend/patch/worker/patch_occamtoken_stage2_decoder.py"
 
 INIT_FILE="${TARGET_DIR}/vllm_ascend/patch/platform/__init__.py"
 if grep -q "OccamToken experiment patch. Installed from /" "${INIT_FILE}"; then

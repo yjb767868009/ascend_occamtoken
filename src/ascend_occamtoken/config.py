@@ -60,6 +60,7 @@ class OccamTokenConfig:
     replacement: ReplacementMode = "mean"
     stage1_scorer: Stage1Scorer = "norm"
     stage2_scorer: Stage2Scorer = "text_similarity"
+    stage2_layer: int = 4
     max_text_tokens: int = 2048
     question_tail_tokens: int = 512
     log_stats: bool = False
@@ -114,6 +115,7 @@ class OccamTokenConfig:
             replacement=replacement,  # type: ignore[arg-type]
             stage1_scorer=stage1_scorer,  # type: ignore[arg-type]
             stage2_scorer=stage2_scorer,  # type: ignore[arg-type]
+            stage2_layer=_env_int("VLLM_ASCEND_OCCAMTOKEN_STAGE2_LAYER", 4),
             max_text_tokens=_env_int("VLLM_ASCEND_OCCAMTOKEN_MAX_TEXT_TOKENS", 2048),
             question_tail_tokens=_env_int(
                 "VLLM_ASCEND_OCCAMTOKEN_QUESTION_TAIL_TOKENS", 512
