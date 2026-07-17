@@ -1,4 +1,9 @@
-"""Decoder-layer hooks for true OccamToken Stage-II experiments."""
+"""Decoder-layer helpers for true OccamToken Stage-II experiments.
+
+The real Stage-II execution path is installed by ``patch_occamtoken_runner``.
+This module only adds Qwen3.5 layer-splitting helpers so the runner can execute
+layers 0..K and K+1..end under different attention metadata contexts.
+"""
 
 from __future__ import annotations
 
@@ -6,18 +11,11 @@ from itertools import islice
 
 import torch
 
-from vllm_ascend.occamtoken.config import OccamTokenConfig
-from vllm_ascend.occamtoken.logging import log_stats
-from vllm_ascend.occamtoken.pruning import stage2_true_keep_mask
 from vllm.distributed import get_pp_group
 from vllm.sequence import IntermediateTensors
 from vllm.model_executor.models.qwen3_5 import (
-    Qwen3_5ForConditionalGeneration,
     Qwen3_5Model,
 )
-
-
-_ORIG_QWEN35_FORWARD = Qwen3_5ForConditionalGeneration.forward
 
 
 def _forward_until_layer(
@@ -110,93 +108,3 @@ def _forward_from_layer(
 
 Qwen3_5Model.forward_until_layer = _forward_until_layer  # type: ignore[attr-defined]
 Qwen3_5Model.forward_from_layer = _forward_from_layer  # type: ignore[attr-defined]
-
-
-def _positions_index_select(positions: torch.Tensor, keep_mask: torch.Tensor):
-    if positions.ndim == 2:
-        return positions[:, keep_mask]
-    return positions[keep_mask]
-
-
-def _patched_qwen35_forward_stage2_true(
-    self: Qwen3_5ForConditionalGeneration,
-    input_ids: torch.Tensor,
-    positions: torch.Tensor,
-    intermediate_tensors: IntermediateTensors | None = None,
-    inputs_embeds: torch.Tensor | None = None,
-    **kwargs: object,
-) -> torch.Tensor | IntermediateTensors:
-    config = OccamTokenConfig.from_env()
-    if not (
-        config.true_sparse_active()
-        and config.stage == "full"
-        and config.stage2_active()
-    ):
-        return _ORIG_QWEN35_FORWARD(
-            self,
-            input_ids=input_ids,
-            positions=positions,
-            intermediate_tensors=intermediate_tensors,
-            inputs_embeds=inputs_embeds,
-            **kwargs,
-        )
-
-    if intermediate_tensors is not None:
-        raise RuntimeError(
-            "OccamToken true Stage-II prototype does not support pipeline "
-            "intermediate_tensors yet."
-        )
-    if inputs_embeds is None:
-        raise RuntimeError(
-            "OccamToken true Stage-II requires merged inputs_embeds."
-        )
-
-    is_multimodal = getattr(self, "_occamtoken_last_is_multimodal", None)
-    if is_multimodal is None:
-        raise RuntimeError(
-            "OccamToken true Stage-II cannot find the multimodal token mask. "
-            "The Qwen3.5 embed_input_ids patch must run before forward()."
-        )
-    if int(is_multimodal.shape[0]) != int(inputs_embeds.shape[0]):
-        raise RuntimeError(
-            "OccamToken true Stage-II multimodal mask length mismatch: "
-            f"is_multimodal={tuple(is_multimodal.shape)} "
-            f"inputs_embeds={tuple(inputs_embeds.shape)}"
-        )
-
-    model = self.language_model.model
-    stage2_layer = int(config.stage2_layer)
-    hidden_states, residual = model.forward_until_layer(
-        input_ids=input_ids,
-        positions=positions,
-        inputs_embeds=inputs_embeds,
-        intermediate_tensors=None,
-        stop_layer=stage2_layer,
-    )
-
-    image_mask = is_multimodal.to(device=hidden_states.device, dtype=torch.bool)
-    text_mask = ~image_mask
-    target_image_tokens = config.final_budget(int(image_mask.sum().item()))
-    keep_mask, stats = stage2_true_keep_mask(
-        hidden_states,
-        image_mask=image_mask,
-        text_mask=text_mask,
-        target_image_tokens=target_image_tokens,
-        config=config,
-    )
-    log_stats([stats])
-
-    hidden_states = hidden_states[keep_mask]
-    if residual is not None:
-        residual = residual[keep_mask]
-    positions = _positions_index_select(positions, keep_mask.to(device=positions.device))
-
-    return model.forward_from_layer(
-        hidden_states=hidden_states,
-        residual=residual,
-        positions=positions,
-        start_layer=stage2_layer + 1,
-    )
-
-
-Qwen3_5ForConditionalGeneration.forward = _patched_qwen35_forward_stage2_true

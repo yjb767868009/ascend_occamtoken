@@ -17,3 +17,4 @@ if os.getenv("VLLM_ASCEND_OCCAMTOKEN_ENABLE", "0").lower() in {
 }:
     import vllm_ascend.patch.worker.patch_occamtoken_qwen35  # noqa
     import vllm_ascend.patch.worker.patch_occamtoken_stage2_decoder  # noqa
+    import vllm_ascend.patch.worker.patch_occamtoken_runner  # noqa
