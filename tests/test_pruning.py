@@ -6,7 +6,6 @@ from ascend_occamtoken.pruning import (
     prune_stage1_masked,
     prune_stage1_true,
     prune_stage2_masked,
-    prune_true_image_tokens,
     select_text_window,
 )
 
@@ -113,90 +112,6 @@ def test_stage2_masked_uses_text_similarity():
     assert pruned.shape == visual.shape
     assert stats.kept_tokens == 1
     assert torch.equal(pruned[1], visual[1])
-
-
-def test_stage2_masked_can_run_after_stage1_true():
-    config = OccamTokenConfig(
-        enabled=True,
-        stage="full",
-        implementation="true",
-        stage1_ratio=0.5,
-        target_ratio=0.25,
-        min_tokens=1,
-    )
-    visual = torch.tensor(
-        [
-            [0.0, 1.0],
-            [0.0, 2.0],
-            [3.0, 0.0],
-            [4.0, 0.0],
-        ]
-    )
-    text = torch.tensor([[1.0, 0.0]])
-
-    stage1, stage1_stats = prune_stage1_true(visual, config)
-    stage2, stage2_stats = prune_stage2_masked(stage1, text, config)
-
-    assert stage1.shape == (2, 2)
-    assert stage1_stats.kept_tokens == 2
-    assert stage2.shape == stage1.shape
-    assert stage2_stats.original_tokens == 2
-    assert stage2_stats.kept_tokens == 1
-
-
-def test_true_full_stage2_ratio_is_relative_to_original_budget():
-    config = OccamTokenConfig(
-        enabled=True,
-        stage="full",
-        implementation="true",
-        stage1_ratio=0.25,
-        target_ratio=0.125,
-        min_tokens=1,
-    )
-
-    assert config.stage1_budget(2048) == 512
-    assert config.stage2_budget(512) == 256
-
-
-def test_true_image_budget_uses_final_budget_for_full_mode():
-    stage1_config = OccamTokenConfig(
-        enabled=True,
-        stage="stage1",
-        implementation="true",
-        stage1_ratio=0.25,
-        target_ratio=0.125,
-        min_tokens=1,
-    )
-    full_config = OccamTokenConfig(
-        enabled=True,
-        stage="full",
-        implementation="true",
-        stage1_ratio=0.25,
-        target_ratio=0.125,
-        min_tokens=1,
-    )
-
-    assert stage1_config.true_image_budget(2048) == 512
-    assert full_config.true_image_budget(2048) == 256
-
-
-def test_full_true_pruning_reduces_to_final_budget():
-    config = OccamTokenConfig(
-        enabled=True,
-        stage="full",
-        implementation="true",
-        stage1_ratio=0.5,
-        target_ratio=0.25,
-        min_tokens=1,
-    )
-    visual = torch.arange(32, dtype=torch.float32).view(8, 4)
-
-    pruned, stats = prune_true_image_tokens(visual, config)
-
-    assert pruned.shape == (2, 4)
-    assert stats.stage == "full_true"
-    assert stats.original_tokens == 8
-    assert stats.kept_tokens == 2
 
 
 def test_select_text_window_prefers_tail():

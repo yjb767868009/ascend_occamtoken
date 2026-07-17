@@ -43,9 +43,9 @@ export VLLM_ASCEND_OCCAMTOKEN_STRICT=1
 Current implementation status:
 
 - Implemented: masked pruning for `fixed`, `stage1`, `stage2`, and `full`.
-- Implemented: true image-token removal for `fixed`, `stage1`, and `full`.
-- Implemented: masked query-aware Stage-II-lite for non-true ablations.
-- Not yet implemented: late query-aware true removal after text/visual embeddings are both available.
+- Implemented: true image-token removal for `fixed`, `stage1`, and the Stage-I part of `full`.
+- Stage-II in `VLLM_ASCEND_OCCAMTOKEN_IMPL=true` is intentionally a no-op for now.
+- Not yet implemented: true Stage-II query-aware token removal.
 
 Masked pruning keeps the visual sequence length unchanged and replaces pruned embeddings with a mean or zero vector. It is intended for quality ablation only; it should not be expected to improve TTFT or KV memory yet.
 
@@ -63,10 +63,9 @@ MODEL_PATH=<QWEN3_5_MODEL_PATH> bash benchmarks/run_occamtoken_matrix.sh stage1-
 falling back to the original image replacement. Keep it enabled for formal
 experiments so a run cannot silently skip true sparsity.
 
-In `full` with `true`, image placeholders and image embeddings are physically
-reduced to `TARGET_RATIO` / `TARGET_TOKENS`. `STAGE1_RATIO` remains useful for
-the ablation matrix and masked modes, but the true sparse `full` path uses the
-final budget for scheduled/KV token reduction.
+In `full` with `true`, Stage-I performs true token removal and Stage-II does
+nothing. This keeps the first performance milestone clean: measure real Stage-I
+sparsity before adding any query-aware late-stage pruning.
 
 Example matrix entry:
 

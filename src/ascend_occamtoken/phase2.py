@@ -14,7 +14,7 @@ import torch
 
 from .config import OccamTokenConfig
 from .logging import log_stats
-from .pruning import prune_true_image_tokens
+from .pruning import prune_stage1_true
 
 
 def prune_phase2_local_image_outputs(
@@ -53,7 +53,7 @@ def prune_phase2_local_image_outputs(
     for local_pos, (global_image_idx, image_embeds) in enumerate(
         zip(my_image_indices, local_outputs, strict=True)
     ):
-        pruned, item_stats = prune_true_image_tokens(image_embeds, config)
+        pruned, item_stats = prune_stage1_true(image_embeds, config)
         expected = int(output_sizes[int(global_image_idx)])
         actual = int(pruned.shape[0])
         if actual != expected:

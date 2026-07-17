@@ -149,27 +149,6 @@ class OccamTokenConfig:
             min_tokens=self.min_tokens,
         )
 
-    def stage2_budget(self, num_tokens: int) -> int:
-        if (
-            self.true_stage1_active()
-            and self.stage == "full"
-            and self.target_tokens <= 0
-            and self.stage1_tokens <= 0
-            and self.stage1_ratio > 0
-        ):
-            return _budget(
-                num_tokens,
-                tokens=0,
-                ratio=min(1.0, self.target_ratio / self.stage1_ratio),
-                min_tokens=self.min_tokens,
-            )
-        return self.final_budget(num_tokens)
-
-    def true_image_budget(self, num_tokens: int) -> int:
-        if self.true_sparse_active() and self.stage == "full":
-            return self.final_budget(num_tokens)
-        return self.stage1_budget(num_tokens)
-
     def true_sparse_active(self) -> bool:
         return self.active() and self.implementation == "true"
 
