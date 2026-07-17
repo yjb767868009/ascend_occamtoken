@@ -114,6 +114,49 @@ def test_stage2_masked_uses_text_similarity():
     assert torch.equal(pruned[1], visual[1])
 
 
+def test_stage2_masked_can_run_after_stage1_true():
+    config = OccamTokenConfig(
+        enabled=True,
+        stage="full",
+        implementation="true",
+        stage1_ratio=0.5,
+        target_ratio=0.25,
+        min_tokens=1,
+    )
+    visual = torch.tensor(
+        [
+            [0.0, 1.0],
+            [0.0, 2.0],
+            [3.0, 0.0],
+            [4.0, 0.0],
+        ]
+    )
+    text = torch.tensor([[1.0, 0.0]])
+
+    stage1, stage1_stats = prune_stage1_true(visual, config)
+    stage2, stage2_stats = prune_stage2_masked(stage1, text, config)
+
+    assert stage1.shape == (2, 2)
+    assert stage1_stats.kept_tokens == 2
+    assert stage2.shape == stage1.shape
+    assert stage2_stats.original_tokens == 2
+    assert stage2_stats.kept_tokens == 1
+
+
+def test_true_full_stage2_ratio_is_relative_to_original_budget():
+    config = OccamTokenConfig(
+        enabled=True,
+        stage="full",
+        implementation="true",
+        stage1_ratio=0.25,
+        target_ratio=0.125,
+        min_tokens=1,
+    )
+
+    assert config.stage1_budget(2048) == 512
+    assert config.stage2_budget(512) == 256
+
+
 def test_select_text_window_prefers_tail():
     text = torch.arange(20, dtype=torch.float32).view(10, 2)
     selected = select_text_window(text, max_text_tokens=4, question_tail_tokens=3)

@@ -127,7 +127,7 @@ def prune_stage2_masked(
     text_embeddings: torch.Tensor,
     config: OccamTokenConfig,
 ) -> tuple[torch.Tensor, PruneStats]:
-    budget = config.final_budget(int(visual_embeddings.shape[0]))
+    budget = config.stage2_budget(int(visual_embeddings.shape[0]))
     scores = stage2_scores(visual_embeddings, text_embeddings, config)
     keep = topk_indices(scores, budget)
     pruned = mask_pruned_embeddings(

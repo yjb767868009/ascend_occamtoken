@@ -260,7 +260,7 @@ def _patched_embed_input_ids(
 
     is_multimodal = _require_is_multimodal(is_multimodal)
 
-    if config.stage2_active() and not config.true_sparse_active():
+    if config.stage2_active():
         text_embeddings = inputs_embeds[~is_multimodal]
         text_embeddings = select_text_window(
             text_embeddings,

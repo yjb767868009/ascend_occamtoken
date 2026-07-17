@@ -1,67 +1,78 @@
-# Handoff: Phase2 Logging Increment
+# Handoff: Stage-II-Lite Increment
 
 This file records only the delta from the previous commit/stage. Full project
 context stays in `README.md` and `docs/`.
 
 ## Changed In This Increment
 
-`src/ascend_occamtoken/phase2.py` now logs per-image Stage-I true pruning stats
-from the direct encoder helper:
+`patches/worker/patch_occamtoken_qwen35.py` now allows Stage-II-lite to run even
+when `VLLM_ASCEND_OCCAMTOKEN_IMPL=true`:
 
 ```python
-pruned, item_stats = prune_stage1_true(image_embeds, config)
-stats.append(item_stats)
-log_stats(stats)
+if config.stage2_active():
+    ...
+    pruned, item_stats = prune_stage2_masked(...)
 ```
 
-With `VLLM_ASCEND_OCCAMTOKEN_LOG_STATS=1`, each phase2 direct-encoder cache miss
-should emit one line per locally encoded image:
+Effect:
 
 ```text
-[occamtoken] stage=stage1 original=... kept=... retention=...
+stage=full, impl=true:
+  Stage-I: true image-token removal before scheduling/merge.
+  Stage-II-lite: query-aware masked pruning on the remaining visual embeddings.
 ```
 
-`tests/test_pruning.py` adds coverage that two local image outputs produce two
-`[occamtoken]` log lines.
+`README.md` was updated to state this explicitly.
+
+`src/ascend_occamtoken/config.py` adds `OccamTokenConfig.stage2_budget()`.
+For `stage=full, impl=true` with ratio-based budgets, Stage-II-lite maps the
+final target ratio back onto the already-shortened Stage-I sequence:
+
+```text
+stage1_ratio=0.25, target_ratio=0.125
+original 2048 -> Stage-I 512 -> Stage-II-lite budget 256
+```
+
+This avoids accidentally applying `target_ratio` twice:
+
+```text
+wrong: 2048 -> 512 -> 64
+```
 
 ## Why This Was Added
 
-In the stock worker path, `_patched_process_image_input()` already logged stats.
-The internal phase2 direct-encoder path used `prune_phase2_local_image_outputs()`
-but previously discarded `_stats`, so successful phase2 pruning could be silent.
+The previous true/full path was Stage-I true removal only; Stage-II was skipped
+in true mode. This made it impossible to test whether query-aware Stage-II helps
+accuracy after Stage-I on the user's Qwen3.5 RAG workload.
 
-This made multi-image tests ambiguous: seeing only one `[occamtoken]` line did
-not prove that only one image was pruned.
+This increment gives a low-risk Stage-II ablation:
 
-## Important Debug Note
+```text
+stage1 true only:
+  performance gain from shorter visual sequence
 
-If `[occamtoken]` appears only once and later requests are silent, first check
-whether later requests hit the multimodal encoder cache. In
-`vllm_ascend/worker/pcp_utils.py`, scheduled encoder inputs are skipped when
-`mm_feature.identifier` is already in `encoder_cache`. Cache hits reuse the
-stored encoder output and do not call `prune_phase2_local_image_outputs()` again.
-
-Temporary phase2 debug print:
-
-```python
-print(
-    f"[occamtoken-debug] phase2 local_outputs={len(local_outputs)} "
-    f"my_image_indices={my_image_indices} "
-    f"output_sizes={[output_sizes[i] for i in my_image_indices]}",
-    flush=True,
-)
+full true:
+  same Stage-I sequence length, plus Stage-II-lite quality reranking/masking
 ```
 
-Temporary PCP scheduling debug print:
+So compare `stage=stage1, impl=true` against `stage=full, impl=true` at the same
+`STAGE1_RATIO`.
 
-```python
-print(
-    f"[occamtoken-debug] mm_hash={mm_hash} "
-    f"cache_hit={mm_hash in encoder_cache}",
-    flush=True,
-)
+## Important Limitation
+
+This is not true Stage-II token removal. Stage-II-lite runs inside
+`embed_input_ids()`, after vLLM has already scheduled the prompt and built the
+multimodal mask. At that point the code can safely replace/mask embeddings, but
+cannot shorten `input_ids`, `is_multimodal`, M-RoPE positions, KV allocation, or
+scheduler metadata.
+
+Expected logs for `stage=full, impl=true`:
+
+```text
+[occamtoken] stage=stage1_true ...
+[occamtoken] stage=stage2_masked ...
 ```
 
-When changing pruning ratio or token budget, restart the worker or clear the
-multimodal encoder cache. The cache key may be image-derived, so cached encoder
-outputs can hide a new OccamToken config.
+For actual true Stage-II token removal, the next implementation must move
+query-aware pruning into a scheduler/PCP-safe point where the selected visual
+positions, M-RoPE positions, and multimodal embedding rows are updated together.
