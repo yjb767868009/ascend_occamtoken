@@ -3,6 +3,28 @@
 This file records only the delta from the previous commit. Full background stays
 in `README.md` and `docs/`.
 
+## New Increment: Qwen3-VL Dedicated Patch Path
+
+Added a separate source-side patch directory for Qwen3-VL:
+
+```text
+patches/qwen3_vl/patch_occamtoken_qwen3vl.py
+```
+
+It reuses the common pruning / logging / M-RoPE helpers, but keeps the model
+patch code separate from the Qwen3.5 patch.
+
+The platform entry point now selects the patch by target model:
+
+```text
+VLLM_ASCEND_OCCAMTOKEN_TARGET_MODEL=qwen3_5   # default
+VLLM_ASCEND_OCCAMTOKEN_TARGET_MODEL=qwen3_vl
+```
+
+For Qwen3-VL, the first supported path is image true Stage-I removal. The
+Qwen3.5 Stage-II runner path remains isolated behind the Qwen3.5 target model
+selection.
+
 ## Changed In This Increment
 
 Added a runner-level true Stage-II path:

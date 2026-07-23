@@ -40,6 +40,21 @@ export VLLM_ASCEND_OCCAMTOKEN_LOG_STATS=1
 export VLLM_ASCEND_OCCAMTOKEN_STRICT=1
 ```
 
+Select the target model patch explicitly:
+
+```bash
+# Default. Keeps using the Qwen3.5 patch path.
+export VLLM_ASCEND_OCCAMTOKEN_TARGET_MODEL=qwen3_5
+
+# Use the dedicated Qwen3-VL patch path.
+export VLLM_ASCEND_OCCAMTOKEN_TARGET_MODEL=qwen3_vl
+```
+
+Qwen3-VL patch code lives under `patches/qwen3_vl/` and reuses the common
+`src/ascend_occamtoken` pruning, logging, and M-RoPE helpers. The first Qwen3-VL
+path is image Stage-I true removal. Video/EVS and true Stage-II should be tested
+and wired separately.
+
 Current implementation status:
 
 - Implemented: masked pruning for `fixed`, `stage1`, `stage2`, and `full`.

@@ -16,6 +16,8 @@ cp "${ROOT_DIR}/patches/platform/patch_occamtoken.py" \
   "${TARGET_DIR}/vllm_ascend/patch/platform/patch_occamtoken.py"
 cp "${ROOT_DIR}/patches/worker/patch_occamtoken_qwen35.py" \
   "${TARGET_DIR}/vllm_ascend/patch/worker/patch_occamtoken_qwen35.py"
+cp "${ROOT_DIR}/patches/qwen3_vl/patch_occamtoken_qwen3vl.py" \
+  "${TARGET_DIR}/vllm_ascend/patch/worker/patch_occamtoken_qwen3vl.py"
 cp "${ROOT_DIR}/patches/worker/patch_occamtoken_stage2_decoder.py" \
   "${TARGET_DIR}/vllm_ascend/patch/worker/patch_occamtoken_stage2_decoder.py"
 cp "${ROOT_DIR}/patches/worker/patch_occamtoken_runner.py" \
